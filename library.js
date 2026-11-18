@@ -20,6 +20,7 @@ const stateNames = {
   pending: '채점 대기'
 };
 let study = emptyScope(), scope = emptyScope(), draft = emptyScope(), tab = 'PSAT';
+let progressExpanded = false;
 let current, pool = [], index = 0, listPage = 0, listStatus = '', listed = [];
 let editing = false, memoryOnly = false, toastTimer;
 let syncState = 'local';
@@ -166,9 +167,9 @@ function meter(s) {
   return `<div class="bar" aria-hidden="true"><i style="width:${
       s.total ? s.done / s.total * 100 : 0}%"></i></div>`;
 }
-function metrics(s) {
+function metrics(s, rateLabel) {
   return `<div class="metrics">${
-          [['전체 진도', percent(s.done, s.total), '%', '◎', 'sage'],
+          [[rateLabel, percent(s.done, s.total), '%', '◎', 'sage'],
            ['풀이 기록', fmt(s.done), '문항', '▤', 'blue'], ['정답', fmt(s.right), '문항', '✓', 'sage'],
            ['오답', fmt(s.wrong), '문항', '×', 'clay']]
               .map(
@@ -180,7 +181,7 @@ function sheetArt() {
   return `<div class="sheet-art" aria-hidden="true"><div class="art-grid"></div><div class="back-sheet"></div><div class="front-sheet"><div class="sheet-edge"><b>Q.</b><i></i></div><div class="ink s1"></div><div class="ink s2"></div><div class="ink s3"></div><div class="sheet-answers"><span>1</span><span>2</span><span>3</span><span>4</span></div></div><div class="pencil"></div></div>`;
 }
 function home() {
-  const q = getLast(), s = stats(questions), visited = byId.has(read(prefix + 'last', null)),
+  const q = getLast(), visited = byId.has(read(prefix + 'last', null)),
         subset = filtered({group: tab});
   main.innerHTML = `<div class="title-row"><h1>학습 홈</h1><span class="date">${
       esc(new Intl.DateTimeFormat('ko-KR', {year: 'numeric', month: 'long', day: 'numeric', weekday: 'short'})
@@ -190,8 +191,7 @@ function home() {
       esc(q.topic || q.exam)}</h2><p class="hero-meta">${esc(q.exam)} · ${
       esc(q.number)}번</p><button class="light-btn" data-act="resume">${
       visited ? '이어서 풀기' : '학습 시작하기'} <span>→</span></button></div>${sheetArt()}</section>
-  <section><div class="section-title"><h2>나의 학습 현황</h2><a href="#progress">진도 관리 ↗</a></div>${
-      metrics(s)}</section>
+  <section id="home-progress" aria-labelledby="home-progress-title">${homeProgress()}</section>
   <section><div class="section-title"><h2>과목별 문제집</h2><span class="muted">전체 ${
       fmt(questions.length)}문항</span></div><div class="tabs" aria-label="문제집 선택">${
       unique(questions, 'group')
@@ -331,46 +331,58 @@ function solve(remember = true) {
     }
   });
 }
-function progress() {
-  const items = filtered(scope), s = stats(items);
-  const next = Object.keys(emptyScope()).find(k => !scope[k] && unique(items, k).length);
-  main.innerHTML = `<div class="title-row"><h1>진도 관리</h1></div><div class="panel"><h2>조회 범위</h2>${
-      filters(scope)}</div><div class="section-title"><h2>${
-      esc(scopeName(
-          scope))} 학습 현황</h2><span class="muted">총 ${fmt(s.total)}문항</span></div>${metrics(s)}
-  <p class="summary-line">미풀이 ${fmt(s.empty)}문항 · 채점 대기 ${fmt(s.pending)}문항</p>
-  ${
-      next ?
-          `<div class="panel table-panel"><h2>분류별 진행 상황</h2><div class="table-scroll"><table><thead><tr><th>분류</th><th>풀이 기록</th><th>정답</th><th>오답</th><th>진도</th></tr></thead><tbody>${
-              unique(items, next)
-                  .map(name => {
-                    const r = stats(items.filter(q => q[next] === name));
-                    return `<tr><th><button class="text-btn" data-drill="${esc(name)}" data-level="${next}">${
-                        esc(name)} ›</button></th><td>${fmt(r.done)} / ${fmt(r.total)}</td><td>${
-                        fmt(r.right)}</td><td>${fmt(r.wrong)}</td><td>${percent(r.done, r.total)}%</td></tr>`;
-                  })
-                  .join('')}</tbody></table></div></div>` :
-          ''}
-  <div class="storage-note"><div><strong data-sync-label>${syncLabels[syncState]}</strong><p>${
-      memoryOnly ?
-          '브라우저 저장 공간을 사용할 수 없습니다.' :
-          '개인 연결 링크로 다른 기기에서도 답안과 마지막 문제를 이어갈 수 있습니다.'}</p></div><div class="storage-actions"><button class="soft" data-act="devices">기기 연결</button><button class="danger-soft" data-act="reset" ${
-      s.done ? '' : 'disabled'}>${esc(scopeName(scope))} 기록 초기화</button></div></div>`;
+function homeProgress() {
+  const scoped = progressExpanded && Object.values(scope).some(Boolean);
+  const items = scoped ? filtered(scope) : questions;
+  const s = stats(items);
+  const title = scoped ? `${esc(scopeName(scope))} 학습 현황` : '나의 학습 현황';
+  const header = `<div class="section-title"><h2 id="home-progress-title">${title}</h2>
+    <button class="text-btn progress-toggle" data-act="toggle-progress" aria-expanded="${progressExpanded}" aria-controls="progress-details">
+    ${progressExpanded ? '분류별 보기 접기' : '분류별 보기'} <span aria-hidden="true">${progressExpanded ? '▴' : '▾'}</span></button></div>`;
+  const summary = metrics(s, scoped ? '선택 범위 진도' : '전체 진도');
+  if (!progressExpanded) return `${header}${summary}<div id="progress-details" hidden></div>`;
+
+  const level = Object.keys(emptyScope()).find(key => !scope[key] && unique(items, key).length);
+  const rows = level ? unique(items, level).map(name => {
+    const part = stats(items.filter(q => q[level] === name));
+    return `<tr><th scope="row"><button class="text-btn" data-drill="${esc(name)}" data-level="${level}">${esc(name)} ›</button></th>
+      <td>${fmt(part.done)} / ${fmt(part.total)}</td><td>${fmt(part.right)}</td>
+      <td>${fmt(part.wrong)}</td><td>${percent(part.done, part.total)}%</td></tr>`;
+  }).join('') : '';
+  return `${header}${summary}<div id="progress-details" class="panel table-panel">
+    ${filters(scope)}
+    <p class="summary-line">총 ${fmt(s.total)}문항 · 미풀이 ${fmt(s.empty)}문항 · 채점 대기 ${fmt(s.pending)}문항</p>
+    ${rows ? `<div class="table-scroll"><table aria-label="분류별 진행 상황"><thead><tr>
+      <th scope="col">분류</th><th scope="col">풀이 기록</th><th scope="col">정답</th>
+      <th scope="col">오답</th><th scope="col">진도</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+    <div class="progress-actions"><button class="danger-soft" data-act="reset" ${s.done ? '' : 'disabled'}>${esc(scopeName(scope))} 기록 초기화</button></div>
+    </div>`;
+}
+function updateHomeProgress(field) {
+  const section = document.querySelector('#home-progress');
+  section.innerHTML = homeProgress();
+  const target = field ? section.querySelector(`[data-field="${field}"]`) : section.querySelector('[data-act="toggle-progress"]');
+  target?.focus({preventScroll: true});
 }
 function render(remember = true) {
   if (!questions.length)
     return;
-  const view = location.hash.startsWith('#solve') ? 'solve' :
-      location.hash === '#progress'               ? 'progress' :
-                                                    'home';
+  const legacyProgress = location.hash === '#progress';
+  if (legacyProgress) {
+    progressExpanded = true;
+    history.replaceState(null, '', '#home');
+  }
+  const view = location.hash.startsWith('#solve') ? 'solve' : 'home';
   document.querySelectorAll('[data-nav]').forEach(a => {
     if (a.dataset.nav === view)
       a.setAttribute('aria-current', 'page');
     else
       a.removeAttribute('aria-current');
   });
-  ({home, solve, progress})[view](remember);
-  document.title = ({home: '학습 홈', solve: '문제 풀기', progress: '진도 관리'}[view]) + ' · 문제서재';
+  if (view === 'solve') solve(remember);
+  else home();
+  document.title = (view === 'solve' ? '문제 풀기' : '학습 홈') + ' · 문제서재';
+  if (legacyProgress) requestAnimationFrame(() => document.querySelector('#home-progress')?.scrollIntoView());
 }
 // Interaction
 function modal(title, body, kind) {
@@ -512,6 +524,10 @@ async function capture(q, btn) {
 }
 function action(name, el) {
   switch (name) {
+    case 'toggle-progress':
+      progressExpanded = !progressExpanded;
+      updateHomeProgress();
+      break;
     case 'devices':
       deviceModal();
       break;
@@ -603,7 +619,8 @@ function action(name, el) {
         persist(prefix + 'last', null, false);
       if (syncReady) window.LibrarySync.reset(items.map(q => 'item.' + q.id));
       dialog.close();
-      progress();
+      home();
+      main.querySelector('[data-act="toggle-progress"]').focus({preventScroll: true});
       toast('선택한 범위의 학습 기록을 초기화했습니다.');
       break;
     }
@@ -627,7 +644,7 @@ document.addEventListener('click', e => {
   }
   if (el.dataset.drill) {
     changeField(scope, el.dataset.level, el.dataset.drill);
-    progress();
+    updateHomeProgress(el.dataset.level);
     return;
   }
   if (el.dataset.id) {
@@ -681,7 +698,7 @@ document.addEventListener('change', e => {
     selectModal();
   } else {
     changeField(scope, el.dataset.field, el.value);
-    progress();
+    updateHomeProgress(el.dataset.field);
   }
 });
 dialog.addEventListener('click', e => {

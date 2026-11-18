@@ -125,7 +125,7 @@
   function promptForCode(catalogs, rejected) {
     const main = document.querySelector('main');
     main.innerHTML = `<section class="panel"><h1>개인 문제서재</h1>
-      <p class="key-note">이미 연결한 기기의 진도 관리에서 개인 링크를 복사해 여세요. 여기에 붙여넣어도 됩니다.</p>
+      <p class="key-note">이미 연결한 기기에서 ‘기기 연결’을 눌러 개인 링크를 복사한 뒤 여기에 붙여넣으세요.</p>
       <form class="private-unlock" style="margin-top:16px">
         <label for="private-link">개인 링크</label>
         <input id="private-link" type="password" autocomplete="off" spellcheck="false" required>
