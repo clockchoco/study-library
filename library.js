@@ -26,8 +26,9 @@ let current, pool = [], index = 0, listPage = 0, listStatus = '', listed = [];
 let editing = false, memoryOnly = false, toastTimer;
 let syncState = 'local';
 let syncReady = false;
+let booting = true;
 let deferredView = false;
-let deferredCursor = false;
+let deferredCursor = '';
 const codePattern = /^[A-Za-z0-9_-]{43}$/;
 const incomingPair = /^#pair=([A-Za-z0-9_-]{43})$/.exec(location.hash)?.[1];
 if (incomingPair) history.replaceState(null, '', location.pathname + location.search);
@@ -44,7 +45,7 @@ function rangeNames(items, field) {
   return field === 'topic' || field === 'subtopic' ? names.sort(compareRangeNames) : names;
 }
 const filtered = s => questions.filter(q => Object.keys(s).every(k => !s[k] || q[k] === s[k]));
-const getLast = () => byId.get(read(prefix + 'last', null)) || questions[0];
+const getLast = () => byId.get(read(prefix + 'last', null)) || filtered(study)[0] || questions[0];
 function read(k, fallback) {
   try {
     return JSON.parse(localStorage.getItem(k)) ?? fallback;
@@ -98,6 +99,41 @@ function deviceSnapshot() {
   }
   return result;
 }
+function scopeDepth(scope) {
+  if (scope.subtopic || (scope.group === 'PSAT' && scope.topic.includes(' · '))) return 4;
+  if (scope.topic) return 3;
+  return scope.category ? 2 : scope.group ? 1 : 0;
+}
+function questionScope(q, depth) {
+  return scopeForPath(rangeFields.slice(0, depth).map(field => q[field]));
+}
+function restoreStudy() {
+  const saved = read(prefix + 'scope', null);
+  study = emptyScope();
+  if (!saved) return;
+  const previous = Object.fromEntries(rangeFields.map(field => [field, typeof saved[field] === 'string' ? saved[field] : '']));
+  const depth = scopeDepth(previous), last = byId.get(read(prefix + 'last', null));
+  let members = questions;
+  for (const field of rangeFields.slice(0, depth)) {
+    const children = members.filter(q => q[field] === previous[field]);
+    if (!previous[field] || !children.length) {
+      // A renamed or split range follows the same question where possible. A stale
+      // cursor from another branch must not move an entire saved range to that branch.
+      if (last && previous.group === last.group && (members.includes(last) ||
+          last.category === previous.category || (previous.subtopic && previous.subtopic === last.subtopic)))
+        study = questionScope(last, depth);
+      else if (previous.subtopic) {
+        const leaf = members.filter(q => q.subtopic === previous.subtopic);
+        if (leaf.length && leaf.every(q => q.category === leaf[0].category && q.topic === leaf[0].topic))
+          study = questionScope(leaf[0], 4);
+      }
+      break;
+    }
+    study[field] = previous[field];
+    members = children;
+  }
+  if (rangeFields.some(k => study[k] !== previous[k])) persist(prefix + 'scope', study);
+}
 function applyDeviceChanges(changes) {
   for (const [key, value] of Object.entries(changes)) {
     if (key.startsWith('item.')) {
@@ -105,13 +141,14 @@ function applyDeviceChanges(changes) {
       if (!byId.has(id)) continue;
       if (value === null) records.delete(id);
       else records.set(id, value);
-    } else if (key === 'scope') {
-      study = {...emptyScope(), ...value};
-    } else if (key !== 'last') continue;
+    } else if (key !== 'scope' && key !== 'last') continue;
     persist(prefix + key, value, false);
   }
+  if (booting) return;
+  if ('scope' in changes || 'last' in changes) restoreStudy();
   deferredView = true;
-  if ('last' in changes) deferredCursor = true;
+  if ('last' in changes) deferredCursor = 'last';
+  else if ('scope' in changes) deferredCursor = 'scope';
   refreshDeviceView();
 }
 function refreshDeviceView() {
@@ -122,10 +159,11 @@ function refreshDeviceView() {
   }
   deferredView = false;
   if (location.hash.startsWith('#solve') && deferredCursor) {
-    const question = getLast();
+    const items = filtered(study), anchor = getLast();
+    const question = deferredCursor === 'last' || items.includes(anchor) ? anchor : items[0] || anchor;
     history.replaceState(null, '', '#solve/' + encodeURIComponent(question.id));
   }
-  deferredCursor = false;
+  deferredCursor = '';
   render(false);
 }
 function setSyncState(status) {
@@ -287,6 +325,7 @@ function home() {
 function go(q) {
   if (!q)
     return;
+  deferredCursor = '';
   const dest = '#solve/' + encodeURIComponent(q.id);
   if (location.hash === dest)
     render();
@@ -375,15 +414,8 @@ function solve(remember = true) {
     setStudy({group: current.group, category: current.category}, remember);
   pool = filtered(study);
   if (!pool.includes(current)) {
-    const next = {group: current.group, category: current.category};
     const resuming = current.id === read(prefix + 'last', null);
-    if (resuming && study.topic) {
-      next.topic = current.topic;
-      // The original PSAT catalog combined the type and subtype in one topic label.
-      if (study.subtopic || (study.group === 'PSAT' && study.topic.includes(' · ')))
-        next.subtopic = current.subtopic || '';
-    }
-    setStudy(next, remember || resuming);
+    setStudy(questionScope(current, resuming && study.topic ? scopeDepth(study) : 2), remember || resuming);
     pool = filtered(study);
   }
   index = pool.indexOf(current);
@@ -886,7 +918,6 @@ async function boot() {
       return i < 0 ? order.length : i;
     };
     questions.sort((a, b) => position(a) - position(b));
-    study = {...emptyScope(), ...read(prefix + 'scope', {})};
     hydrate();
     const sync = window.LibrarySync;
     const profile = window.LibraryPrivate?.pairingCode() || incomingPair;
@@ -901,6 +932,10 @@ async function boot() {
         catch { setSyncState('offline'); toast('기기 연결을 마치지 못했습니다. 개인 링크를 다시 열어 주세요.'); }
       }
     }
+    // The synced cursor and range may arrive in either order. Restore them together
+    // before the first render, keeping an explicit incoming question link intact.
+    booting = false;
+    restoreStudy();
     render(!profile && !sync?.code());
     watchStudyDay();
     if (memoryOnly)
