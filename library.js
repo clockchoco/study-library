@@ -19,8 +19,9 @@ const stateNames = {
   wrong: '오답',
   pending: '채점 대기'
 };
-let study = emptyScope(), scope = emptyScope(), draft = emptyScope(), tab = 'PSAT';
-let progressExpanded = false;
+const rangeFields = Object.keys(emptyScope());
+let study = emptyScope(), draft = emptyScope(), tab = 'PSAT';
+let expandedPath = [], pendingReset = null;
 let current, pool = [], index = 0, listPage = 0, listStatus = '', listed = [];
 let editing = false, memoryOnly = false, toastTimer;
 let syncState = 'local';
@@ -180,37 +181,58 @@ function metrics(s, rateLabel) {
 function sheetArt() {
   return `<div class="sheet-art" aria-hidden="true"><div class="art-grid"></div><div class="back-sheet"></div><div class="front-sheet"><div class="sheet-edge"><b>Q.</b><i></i></div><div class="ink s1"></div><div class="ink s2"></div><div class="ink s3"></div><div class="sheet-answers"><span>1</span><span>2</span><span>3</span><span>4</span></div></div><div class="pencil"></div></div>`;
 }
+function scopeForPath(path) {
+  const result = emptyScope();
+  path.forEach((name, index) => { result[rangeFields[index]] = name; });
+  return result;
+}
+function rangeRows(items, parentPath) {
+  const field = rangeFields[parentPath.length];
+  return unique(items, field).map(name => {
+    const path = [...parentPath, name];
+    const members = items.filter(q => q[field] === name);
+    const s = stats(members);
+    const childField = rangeFields[path.length];
+    const children = childField ? unique(members, childField) : [];
+    const open = children.length > 0 && path.every((part, index) => expandedPath[index] === part);
+    const counts = [`정답 ${fmt(s.right)}`, `오답 ${fmt(s.wrong)}`];
+    if (s.pending) counts.push(`채점 대기 ${fmt(s.pending)}`);
+    if (children.length) counts.unshift(`${fmt(children.length)}개 ${childField === 'topic' ? '유형' : '세부 유형'}`);
+    const markIndex = order.indexOf(name);
+    const mark = path.length === 2 && markIndex >= 0
+      ? `<span class="subject-mark ${['sage','blue','clay','plum','wheat'][markIndex % 5]}" aria-hidden="true">${esc(glyphs[markIndex])}</span>` : '';
+    const label = `${mark}<span class="range-title"><strong>${esc(name)}</strong><small>${counts.join(' · ')}</small></span>`;
+    return `<div class="range-row" data-path="${esc(JSON.stringify(path))}" data-depth="${path.length - 2}">
+      ${children.length ? `<button class="range-label" data-expand-range aria-expanded="${open}" aria-label="${esc(name)} ${childField === 'topic' ? '유형' : '세부 유형'} ${open ? '접기' : '보기'}">${label}<span class="range-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span></button>` : `<div class="range-label">${label}</div>`}
+      <div class="range-progress"><span>${fmt(s.done)} / ${fmt(s.total)}문항</span>${meter(s)}</div>
+      <div class="range-actions"><button class="soft" data-start-range aria-label="${esc(name)} 풀기">풀기</button>
+        <button class="range-reset" data-reset="range" aria-label="${esc(name)} 기록 초기화" ${s.done ? '' : 'disabled'}>초기화</button></div>
+    </div>${open ? rangeRows(members, path) : ''}`;
+  }).join('');
+}
+function rangeLibrary() {
+  const items = filtered({group: tab}), s = stats(items);
+  const tabs = unique(questions, 'group').map(name =>
+    `<button data-group="${esc(name)}" aria-pressed="${name === tab}">${esc(name)}</button>`).join('');
+  return `<div class="section-title"><h2 id="library-heading">과목별 문제집</h2></div>
+    <div class="library-toolbar"><div class="tabs" aria-label="문제집 선택">${tabs}</div>
+    <div class="range-heading-actions"><span class="muted">${fmt(s.done)} / ${fmt(s.total)}문항</span>
+    <button class="range-reset" data-reset="group" ${s.done ? '' : 'disabled'}>${esc(tab)} 초기화</button></div></div>
+    <div class="range-list">${rangeRows(items, [tab])}</div>`;
+}
 function home() {
-  const q = getLast(), visited = byId.has(read(prefix + 'last', null)),
-        subset = filtered({group: tab});
-  main.innerHTML = `<div class="title-row"><h1>학습 홈</h1><span class="date">${
-      esc(new Intl.DateTimeFormat('ko-KR', {year: 'numeric', month: 'long', day: 'numeric', weekday: 'short'})
-              .format(new Date()))}</span></div>
-  <section class="hero"><div class="hero-text"><p class="eyeline"><i></i>${
-      visited ? '최근 학습한 문제' : '첫 번째 문제'}</p><h2>${esc(q.category)}<span> / </span>${
-      esc(q.topic || q.exam)}</h2><p class="hero-meta">${esc(q.exam)} · ${
-      esc(q.number)}번</p><button class="light-btn" data-act="resume">${
-      visited ? '이어서 풀기' : '학습 시작하기'} <span>→</span></button></div>${sheetArt()}</section>
-  <section id="home-progress" aria-labelledby="home-progress-title">${homeProgress()}</section>
-  <section><div class="section-title"><h2>과목별 문제집</h2><span class="muted">전체 ${
-      fmt(questions.length)}문항</span></div><div class="tabs" aria-label="문제집 선택">${
-      unique(questions, 'group')
-          .map(g => `<button data-group="${esc(g)}" aria-pressed="${g === tab}">${esc(g)}</button>`)
-          .join('')}</div>
-  <div class="shelves">${
-      unique(subset, 'category')
-          .map(cat => {
-            const items = subset.filter(x => x.category === cat), r = stats(items),
-                  i = Math.max(0, order.indexOf(cat));
-            return `<button class="book" data-category="${esc(cat)}"><span class="subject-mark ${
-                    ['sage', 'blue', 'clay', 'plum', 'wheat'][i % 5]}" aria-hidden="true">${
-                esc(glyphs[i])}</span><span class="book-heading"><strong>${esc(cat)}</strong><small>${
-                fmt(unique(items, 'topic').length)}개 유형 · ${
-                fmt(items
-                        .length)}문항</small></span><span class="book-arrow" aria-hidden="true">↗</span><span class="book-foot"><span>학습 진도</span><b>${
-                percent(r.done, r.total)}%</b></span>${meter(r)}</button>`;
-          })
-          .join('')}</div></section>`;
+  const q = getLast(), visited = byId.has(read(prefix + 'last', null)), s = stats(questions);
+  const date = new Intl.DateTimeFormat('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'short'}).format(new Date());
+  main.innerHTML = `<div class="title-row"><h1>학습 홈</h1><span class="date">${esc(date)}</span></div>
+    <section class="hero"><div class="hero-text"><p class="eyeline"><i></i>${visited ? '최근 학습한 문제' : '첫 번째 문제'}</p>
+      <h2>${esc(q.category)}<span> / </span>${esc(q.topic || q.exam)}</h2>
+      <p class="hero-meta">${esc(q.exam)} · ${esc(q.number)}번</p>
+      <button class="light-btn" data-act="resume">${visited ? '이어서 풀기' : '학습 시작하기'} <span>→</span></button></div>${sheetArt()}</section>
+    <section id="home-progress" aria-labelledby="home-progress-title"><div class="section-title">
+      <h2 id="home-progress-title">전체 학습 현황</h2>
+      <button class="range-reset" data-reset="all" ${s.done ? '' : 'disabled'}>전체 기록 초기화</button></div>
+      ${metrics(s, '전체 진도')}</section>
+    <section id="range-library" aria-labelledby="library-heading">${rangeLibrary()}</section>`;
 }
 // Reader
 function go(q) {
@@ -303,7 +325,8 @@ function solve(remember = true) {
           index <= 0 ?
               'disabled' :
               ''}>←</button><button class="soft" data-act="list">문제 목록</button><button class="soft" data-act="next" aria-label="다음 문제" ${
-          index + 1 >= pool.length ? 'disabled' : ''}>→</button></div></aside>
+          index + 1 >= pool.length ? 'disabled' : ''}>→</button></div>
+          <button class="range-reset reader-range-reset" data-reset="study" ${s.done ? '' : 'disabled'}>현재 범위 초기화</button></aside>
   <div class="reader-column"><article class="question"><div class="question-head"><div class="crumb">${esc([
         q.group, q.category, q.topic, q.subtopic
       ].filter(Boolean).join(' › '))}</div><div class="question-title"><h2>${esc(q.exam)} <span>${
@@ -331,45 +354,11 @@ function solve(remember = true) {
     }
   });
 }
-function homeProgress() {
-  const scoped = progressExpanded && Object.values(scope).some(Boolean);
-  const items = scoped ? filtered(scope) : questions;
-  const s = stats(items);
-  const title = scoped ? `${esc(scopeName(scope))} 학습 현황` : '나의 학습 현황';
-  const header = `<div class="section-title"><h2 id="home-progress-title">${title}</h2>
-    <button class="text-btn progress-toggle" data-act="toggle-progress" aria-expanded="${progressExpanded}" aria-controls="progress-details">
-    ${progressExpanded ? '분류별 보기 접기' : '분류별 보기'} <span aria-hidden="true">${progressExpanded ? '▴' : '▾'}</span></button></div>`;
-  const summary = metrics(s, scoped ? '선택 범위 진도' : '전체 진도');
-  if (!progressExpanded) return `${header}${summary}<div id="progress-details" hidden></div>`;
-
-  const level = Object.keys(emptyScope()).find(key => !scope[key] && unique(items, key).length);
-  const rows = level ? unique(items, level).map(name => {
-    const part = stats(items.filter(q => q[level] === name));
-    return `<tr><th scope="row"><button class="text-btn" data-drill="${esc(name)}" data-level="${level}">${esc(name)} ›</button></th>
-      <td>${fmt(part.done)} / ${fmt(part.total)}</td><td>${fmt(part.right)}</td>
-      <td>${fmt(part.wrong)}</td><td>${percent(part.done, part.total)}%</td></tr>`;
-  }).join('') : '';
-  return `${header}${summary}<div id="progress-details" class="panel table-panel">
-    ${filters(scope)}
-    <p class="summary-line">총 ${fmt(s.total)}문항 · 미풀이 ${fmt(s.empty)}문항 · 채점 대기 ${fmt(s.pending)}문항</p>
-    ${rows ? `<div class="table-scroll"><table aria-label="분류별 진행 상황"><thead><tr>
-      <th scope="col">분류</th><th scope="col">풀이 기록</th><th scope="col">정답</th>
-      <th scope="col">오답</th><th scope="col">진도</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
-    <div class="progress-actions"><button class="danger-soft" data-act="reset" ${s.done ? '' : 'disabled'}>${esc(scopeName(scope))} 기록 초기화</button></div>
-    </div>`;
-}
-function updateHomeProgress(field) {
-  const section = document.querySelector('#home-progress');
-  section.innerHTML = homeProgress();
-  const target = field ? section.querySelector(`[data-field="${field}"]`) : section.querySelector('[data-act="toggle-progress"]');
-  target?.focus({preventScroll: true});
-}
 function render(remember = true) {
   if (!questions.length)
     return;
   const legacyProgress = location.hash === '#progress';
   if (legacyProgress) {
-    progressExpanded = true;
     history.replaceState(null, '', '#home');
   }
   const view = location.hash.startsWith('#solve') ? 'solve' : 'home';
@@ -451,12 +440,12 @@ async function deviceAction(name, button) {
   } finally { button.disabled = false; }
 }
 function selectModal() {
-  const items = filtered(draft);
+  const s = stats(filtered(draft));
   modal(
       '문제집 선택',
-      `${filters(draft)}<div class="modal-footer"><span class="muted">${
-          fmt(items.length)}문항</span><button class="primary" data-act="apply" ${
-          items.length ? '' : 'disabled'}>문제 풀기 →</button></div>`,
+      `${filters(draft)}<div class="scope-footer"><span class="muted">풀이 ${fmt(s.done)} / ${fmt(s.total)}문항</span>
+      <button class="range-reset" data-reset="draft" ${s.done ? '' : 'disabled'}>선택 범위 초기화</button>
+      <button class="primary" data-act="apply" ${s.total ? '' : 'disabled'}>문제 풀기 →</button></div>`,
       'filter');
 }
 function listModal() {
@@ -522,12 +511,61 @@ async function capture(q, btn) {
     btn.disabled = false;
   }
 }
+function rowForPath(path) {
+  const pathKey = JSON.stringify(path);
+  return Array.from(main.querySelectorAll('.range-row')).find(row => row.dataset.path === pathKey);
+}
+function askReset(origin, path = []) {
+  const targets = {all: {}, group: {group: tab}, range: scopeForPath(path), study, draft};
+  const selection = {...emptyScope(), ...targets[origin]};
+  const done = stats(filtered(selection)).done;
+  if (!done) return;
+  pendingReset = {origin, path, selection, done};
+  showResetConfirmation();
+}
+function showResetConfirmation() {
+  const {selection, done} = pendingReset;
+  const label = rangeFields.map(field => selection[field]).filter(Boolean).join(' › ') || '전체 문제';
+  modal('풀이 기록을 초기화할까요?',
+    `<p><strong>${esc(label)}</strong></p><p>이 범위에 저장한 답안과 채점 기록 ${fmt(done)}건이 삭제됩니다.</p>
+    <div class="modal-footer"><button class="soft" data-act="close">취소</button>
+    <button class="danger" data-act="confirm-reset">기록 초기화</button></div>`, 'reset');
+  dialog.querySelector('.modal-footer [data-act="close"]').focus();
+}
+function dismissDialog() {
+  const returnToPicker = pendingReset?.origin === 'draft';
+  pendingReset = null;
+  if (returnToPicker) selectModal();
+  else dialog.close();
+}
+function confirmReset() {
+  if (!pendingReset || dialog.dataset.kind !== 'reset') return;
+  const {origin, path, selection} = pendingReset;
+  const items = filtered(selection), done = stats(items).done;
+  if (done && done !== pendingReset.done) {
+    pendingReset.done = done;
+    showResetConfirmation();
+    return;
+  }
+  if (done) {
+    for (const q of items) {
+      if (records.delete(q.id)) persist(entry + q.id, null, false);
+    }
+    const last = read(prefix + 'last', null);
+    if (items.some(q => q.id === last)) persist(prefix + 'last', null, false);
+    if (syncReady) window.LibrarySync.reset(items.map(q => 'item.' + q.id));
+  }
+  pendingReset = null;
+  if (origin !== 'draft') dialog.close();
+  render(false);
+  if (origin === 'draft') selectModal();
+  else if (origin === 'range') rowForPath(path)?.querySelector('[data-start-range]')?.focus({preventScroll: true});
+  else if (origin === 'study') main.querySelector('.aside-nav [data-act="list"]')?.focus({preventScroll: true});
+  else main.querySelector(origin === 'group' ? '[data-group][aria-pressed="true"]' : '[data-act="resume"]')?.focus({preventScroll: true});
+  toast(`${scopeName(selection)} 풀이 기록을 초기화했습니다.`);
+}
 function action(name, el) {
   switch (name) {
-    case 'toggle-progress':
-      progressExpanded = !progressExpanded;
-      updateHomeProgress();
-      break;
     case 'devices':
       deviceModal();
       break;
@@ -578,7 +616,7 @@ function action(name, el) {
       go(pool[index + 1]);
       break;
     case 'close':
-      dialog.close();
+      dismissDialog();
       break;
     case 'capture':
       capture(current, el);
@@ -600,51 +638,39 @@ function action(name, el) {
       solve();
       break;
     }
-    case 'reset':
-      modal(
-          '학습 기록을 초기화할까요?',
-          `<p><strong>${esc(scopeName(scope))}</strong>에 기록한 답안과 채점 결과 ${
-              fmt(stats(filtered(scope))
-                      .done)}건이 삭제됩니다.</p><div class="modal-footer"><button class="soft" data-act="close">취소</button><button class="danger" data-act="confirm-reset">기록 초기화</button></div>`,
-          'reset');
+    case 'confirm-reset':
+      confirmReset();
       break;
-    case 'confirm-reset': {
-      const items = filtered(scope), last = read(prefix + 'last', null);
-      for (const q of items)
-        if (records.has(q.id)) {
-          records.delete(q.id);
-          persist(entry + q.id, null, false);
-        }
-      if (items.some(q => q.id === last))
-        persist(prefix + 'last', null, false);
-      if (syncReady) window.LibrarySync.reset(items.map(q => 'item.' + q.id));
-      dialog.close();
-      home();
-      main.querySelector('[data-act="toggle-progress"]').focus({preventScroll: true});
-      toast('선택한 범위의 학습 기록을 초기화했습니다.');
-      break;
-    }
   }
 }
 document.addEventListener('click', e => {
   const el = e.target.closest('button');
   if (!el || el.disabled)
     return;
+  const rangeRow = el.closest('.range-row');
+  const path = rangeRow ? JSON.parse(rangeRow.dataset.path) : [];
+  if (el.dataset.reset) {
+    askReset(el.dataset.reset, path);
+    return;
+  }
+  if (el.hasAttribute('data-expand-range')) {
+    expandedPath = el.getAttribute('aria-expanded') === 'true' ? path.slice(0, -1) : path;
+    main.querySelector('#range-library').innerHTML = rangeLibrary();
+    rowForPath(path)?.querySelector('[data-expand-range]')?.focus({preventScroll: true});
+    return;
+  }
+  if (el.hasAttribute('data-start-range')) {
+    startScope(scopeForPath(path));
+    return;
+  }
   if (el.dataset.act)
     return action(el.dataset.act, el);
   if (el.dataset.group) {
+    if (el.dataset.group === tab) return;
     tab = el.dataset.group;
-    home();
-    return;
-  }
-  if (el.dataset.category) {
-    draft = {...emptyScope(), group: tab, category: el.dataset.category};
-    selectModal();
-    return;
-  }
-  if (el.dataset.drill) {
-    changeField(scope, el.dataset.level, el.dataset.drill);
-    updateHomeProgress(el.dataset.level);
+    expandedPath = [];
+    main.querySelector('#range-library').innerHTML = rangeLibrary();
+    main.querySelector('[data-group][aria-pressed="true"]').focus({preventScroll: true});
     return;
   }
   if (el.dataset.id) {
@@ -682,6 +708,7 @@ document.addEventListener('input', e => {
   sidebar.querySelector('.aside-stats').innerHTML =
       `<b>${percent(s.done, s.total)}%</b><span>${fmt(s.done)} / ${fmt(s.total)}문항</span>`;
   sidebar.querySelector('.bar i').style.width = (s.total ? s.done / s.total * 100 : 0) + '%';
+  sidebar.querySelector('[data-reset="study"]').disabled = !s.done;
 });
 document.addEventListener('change', e => {
   const el = e.target;
@@ -693,19 +720,25 @@ document.addEventListener('change', e => {
   }
   if (!el.dataset.field)
     return;
-  if (dialog.open) {
+  if (dialog.open && dialog.dataset.kind === 'filter') {
     changeField(draft, el.dataset.field, el.value);
     selectModal();
-  } else {
-    changeField(scope, el.dataset.field, el.value);
-    updateHomeProgress(el.dataset.field);
   }
 });
 dialog.addEventListener('click', e => {
   if (e.target === dialog)
-    dialog.close();
+    dismissDialog();
 });
-dialog.addEventListener('close', refreshDeviceView);
+dialog.addEventListener('cancel', e => {
+  if (pendingReset?.origin === 'draft') {
+    e.preventDefault();
+    dismissDialog();
+  }
+});
+dialog.addEventListener('close', () => {
+  pendingReset = null;
+  refreshDeviceView();
+});
 document.addEventListener('focusout', e => {
   if (e.target.id === 'written' && deferredView) setTimeout(refreshDeviceView, 0);
 });
