@@ -440,6 +440,36 @@ h1 {
   margin:29px 0 14px;
 }
 
+.progress-heading,.scope-counts {
+  display:flex;
+  align-items:baseline;
+  flex-wrap:wrap;
+}
+
+.progress-heading {
+  gap:2px 12px;
+}
+
+.scope-counts {
+  gap:1px 9px;
+  font-size:12px;
+  color:var(--muted);
+  font-variant-numeric:tabular-nums;
+}
+
+.scope-counts>span,[data-today] {
+  white-space:nowrap;
+}
+
+[data-today] {
+  color:var(--forest);
+  font-weight:700;
+}
+
+.progress-heading [data-today] {
+  font-size:14px;
+}
+
 .section-title h2,.panel h2,.modal-title h2,.answer h2,.reader-aside h2,.question-title h2 {
   font-size:20px;
   letter-spacing:-.055em;
@@ -767,9 +797,10 @@ button.range-label:hover .range-title strong {
   font-size:21px;
 }
 
-.aside-stats span {
+.aside-stats .scope-counts {
+  flex-direction:column;
+  align-items:flex-end;
   font-size:11px;
-  color:var(--muted);
 }
 
 .reader-aside button {
@@ -1299,6 +1330,10 @@ dialog .filters {
   .range-heading-actions {
     justify-content:flex-end;
   }
+  .range-heading-actions .scope-counts {
+    flex-direction:column;
+    align-items:flex-end;
+  }
   .reader-layout {
     display:block;
   }
@@ -1324,6 +1359,9 @@ dialog .filters {
   }
   .reader-aside .aside-stats b {
     font-size:14px;
+  }
+  .reader-aside .scope-counts {
+    align-items:baseline;
   }
   .reader-aside .aside-nav {
     grid-row:1;
@@ -1436,10 +1474,7 @@ dialog .filters {
     align-items:flex-end;
     gap:2px;
   }
-  .range-heading-actions .muted {
-    font-size:11px;
-  }
-  .scope-footer .muted {
+  .scope-footer .scope-counts {
     flex-basis:100%;
   }
 }

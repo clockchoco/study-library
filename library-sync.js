@@ -165,8 +165,7 @@ function acknowledge(batch) {
     try { localStorage.removeItem(storageKey); } catch { /* Retry duplicates are idempotent. */ }
   }
 }
-function setCell(fields, key, value, op, version, seeded = false) {
-  const previous = fields[key];
+function acceptsCell(previous, value, op, version, seeded) {
   if (previous) {
     if (seeded || previous[1] === op.id) return false;
     if (previous[2] > op.base && previous[2] !== version) {
@@ -175,8 +174,23 @@ function setCell(fields, key, value, op, version, seeded = false) {
       if (previous[0] === null && value === null && previous[1] > op.id) return false;
     }
   }
-  fields[key] = [value,op.id,version];
   return true;
+}
+function setCell(fields, key, value, op, version, seeded = false) {
+  const previous = fields[key];
+  const accepted = acceptsCell(previous, value, op, version, seeded);
+  const cell = accepted ? [value,op.id,version] : previous;
+  // Concurrent edits choose one answer, but either device may have solved it more recently.
+  // A deletion still clears the entire record, including its solve date.
+  if (key.startsWith('item.') && previous?.[0] && value) {
+    const other = accepted ? previous[0] : value;
+    if (other.lastSolvedDay > (cell[0].lastSolvedDay || '')) {
+      fields[key] = [{...cell[0], lastSolvedDay: other.lastSolvedDay}, cell[1], cell[2]];
+      return true;
+    }
+  }
+  if (accepted) fields[key] = cell;
+  return accepted;
 }
 function merge(c, doc, batch) {
   const fields = {...(doc?.fields || {})}, version = (doc?.n || 0)+1;

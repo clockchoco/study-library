@@ -73,9 +73,16 @@ function hydrate() {
     memoryOnly = true;
   }
 }
-function save(r) {
-  records.set(current.id, r);
-  persist(entry + current.id, r);
+const koreaOffsetMs = 9 * 60 * 60 * 1000;
+const dayMs = 24 * 60 * 60 * 1000;
+function currentStudyDay() {
+  return new Date(Date.now() + koreaOffsetMs).toISOString().slice(0, 10);
+}
+function save(answer, {draft = false} = {}) {
+  const day = draft ? records.get(current.id)?.lastSolvedDay : currentStudyDay();
+  const record = day ? {...answer, lastSolvedDay: day} : answer;
+  records.set(current.id, record);
+  persist(entry + current.id, record);
 }
 function deviceSnapshot() {
   const result = {};
@@ -103,7 +110,11 @@ function applyDeviceChanges(changes) {
   refreshDeviceView();
 }
 function refreshDeviceView() {
-  if (!deferredView || dialog.open || document.activeElement?.id === 'written') return;
+  if (!deferredView) return;
+  if (dialog.open || document.activeElement?.id === 'written') {
+    refreshTodayCounts();
+    return;
+  }
   deferredView = false;
   if (location.hash.startsWith('#solve') && deferredCursor) {
     const question = getLast();
@@ -126,8 +137,12 @@ function state(q) {
   return ['right', 'wrong'].includes(r.manual) ? r.manual : 'pending';
 }
 function stats(items) {
-  const s = {right: 0, wrong: 0, pending: 0, empty: 0, total: items.length};
-  for (const q of items) s[state(q)]++;
+  const s = {right: 0, wrong: 0, pending: 0, empty: 0, today: 0, total: items.length};
+  const day = currentStudyDay();
+  for (const q of items) {
+    s[state(q)]++;
+    if (records.get(q.id)?.lastSolvedDay === day) s.today++;
+  }
   s.done = s.total - s.empty;
   return s;
 }
@@ -168,6 +183,33 @@ function meter(s) {
   return `<div class="bar" aria-hidden="true"><i style="width:${
       s.total ? s.done / s.total * 100 : 0}%"></i></div>`;
 }
+const studyDateFormat = new Intl.DateTimeFormat('ko-KR', {
+  timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric', weekday: 'short'
+});
+const todayText = count => `오늘 ${fmt(count)}문항`;
+function todayCount(s, scope) {
+  return `<span data-today="${scope}" title="한국 시간 기준 오늘 푼 문제 수">${todayText(s.today)}</span>`;
+}
+function scopeCounts(s, scope) {
+  return `<span class="scope-counts">${todayCount(s, scope)}<span>누적 ${fmt(s.done)} / ${fmt(s.total)}문항</span></span>`;
+}
+function refreshTodayCounts() {
+  const date = main.querySelector('.date');
+  if (date) date.textContent = studyDateFormat.format(new Date());
+  for (const count of document.querySelectorAll('[data-today]')) {
+    let items;
+    switch (count.dataset.today) {
+      case 'all': items = questions; break;
+      case 'group': items = filtered({group: tab}); break;
+      case 'study': items = pool; break;
+      case 'draft': items = filtered(draft); break;
+      case 'range':
+        items = filtered(scopeForPath(JSON.parse(count.closest('.range-row').dataset.path)));
+        break;
+    }
+    count.textContent = todayText(stats(items).today);
+  }
+}
 function metrics(s, rateLabel) {
   return `<div class="metrics">${
           [[rateLabel, percent(s.done, s.total), '%', '◎', 'sage'],
@@ -204,7 +246,7 @@ function rangeRows(items, parentPath) {
     const label = `${mark}<span class="range-title"><strong>${esc(name)}</strong><small>${counts.join(' · ')}</small></span>`;
     return `<div class="range-row" data-path="${esc(JSON.stringify(path))}" data-depth="${path.length - 2}">
       ${children.length ? `<button class="range-label" data-expand-range aria-expanded="${open}" aria-label="${esc(name)} ${childField === 'topic' ? '유형' : '세부 유형'} ${open ? '접기' : '보기'}">${label}<span class="range-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span></button>` : `<div class="range-label">${label}</div>`}
-      <div class="range-progress"><span>${fmt(s.done)} / ${fmt(s.total)}문항</span>${meter(s)}</div>
+      <div class="range-progress">${scopeCounts(s, 'range')}${meter(s)}</div>
       <div class="range-actions"><button class="soft" data-start-range aria-label="${esc(name)} 풀기">풀기</button>
         <button class="range-reset" data-reset="range" aria-label="${esc(name)} 기록 초기화" ${s.done ? '' : 'disabled'}>초기화</button></div>
     </div>${open ? rangeRows(members, path) : ''}`;
@@ -216,20 +258,20 @@ function rangeLibrary() {
     `<button data-group="${esc(name)}" aria-pressed="${name === tab}">${esc(name)}</button>`).join('');
   return `<div class="section-title"><h2 id="library-heading">과목별 문제집</h2></div>
     <div class="library-toolbar"><div class="tabs" aria-label="문제집 선택">${tabs}</div>
-    <div class="range-heading-actions"><span class="muted">${fmt(s.done)} / ${fmt(s.total)}문항</span>
+    <div class="range-heading-actions">${scopeCounts(s, 'group')}
     <button class="range-reset" data-reset="group" ${s.done ? '' : 'disabled'}>${esc(tab)} 초기화</button></div></div>
     <div class="range-list">${rangeRows(items, [tab])}</div>`;
 }
 function home() {
   const q = getLast(), visited = byId.has(read(prefix + 'last', null)), s = stats(questions);
-  const date = new Intl.DateTimeFormat('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'short'}).format(new Date());
+  const date = studyDateFormat.format(new Date());
   main.innerHTML = `<div class="title-row"><h1>학습 홈</h1><span class="date">${esc(date)}</span></div>
     <section class="hero"><div class="hero-text"><p class="eyeline"><i></i>${visited ? '최근 학습한 문제' : '첫 번째 문제'}</p>
       <h2>${esc(q.category)}<span> / </span>${esc(q.topic || q.exam)}</h2>
       <p class="hero-meta">${esc(q.exam)} · ${esc(q.number)}번</p>
       <button class="light-btn" data-act="resume">${visited ? '이어서 풀기' : '학습 시작하기'} <span>→</span></button></div>${sheetArt()}</section>
     <section id="home-progress" aria-labelledby="home-progress-title"><div class="section-title">
-      <h2 id="home-progress-title">전체 학습 현황</h2>
+      <div class="progress-heading"><h2 id="home-progress-title">전체 학습 현황</h2>${todayCount(s, 'all')}</div>
       <button class="range-reset" data-reset="all" ${s.done ? '' : 'disabled'}>전체 기록 초기화</button></div>
       ${metrics(s, '전체 진도')}</section>
     <section id="range-library" aria-labelledby="library-heading">${rangeLibrary()}</section>`;
@@ -319,8 +361,8 @@ function solve(remember = true) {
   main.innerHTML =
       `<div class="title-row"><h1>문제 풀기</h1><button class="soft" data-act="filter">문제집 선택 ⌄</button></div><div class="reader-layout">
   <aside class="reader-aside"><span class="label">선택한 문제집</span><h2>${
-          esc(scopeName(study))}</h2><div class="aside-stats"><b>${percent(s.done, s.total)}%</b><span>${
-          fmt(s.done)} / ${fmt(s.total)}문항</span></div>${
+          esc(scopeName(study))}</h2><div class="aside-stats"><b>${percent(s.done, s.total)}%</b>${
+          scopeCounts(s, 'study')}</div>${
           meter(s)}<div class="aside-nav"><button class="soft" data-act="prev" aria-label="이전 문제" ${
           index <= 0 ?
               'disabled' :
@@ -443,7 +485,7 @@ function selectModal() {
   const s = stats(filtered(draft));
   modal(
       '문제집 선택',
-      `${filters(draft)}<div class="scope-footer"><span class="muted">풀이 ${fmt(s.done)} / ${fmt(s.total)}문항</span>
+      `${filters(draft)}<div class="scope-footer">${scopeCounts(s, 'draft')}
       <button class="range-reset" data-reset="draft" ${s.done ? '' : 'disabled'}>선택 범위 초기화</button>
       <button class="primary" data-act="apply" ${s.total ? '' : 'disabled'}>문제 풀기 →</button></div>`,
       'filter');
@@ -705,7 +747,7 @@ document.addEventListener('input', e => {
     return;
   const text = e.target.value;
   if (text.trim())
-    save({text});
+    save({text}, {draft: true});
   else {
     records.delete(current.id);
     persist(entry + current.id, null);
@@ -713,7 +755,7 @@ document.addEventListener('input', e => {
   main.querySelector('.feedback')?.remove();
   const s = stats(pool), sidebar = main.querySelector('.reader-aside');
   sidebar.querySelector('.aside-stats').innerHTML =
-      `<b>${percent(s.done, s.total)}%</b><span>${fmt(s.done)} / ${fmt(s.total)}문항</span>`;
+      `<b>${percent(s.done, s.total)}%</b>${scopeCounts(s, 'study')}`;
   sidebar.querySelector('.bar i').style.width = (s.total ? s.done / s.total * 100 : 0) + '%';
   sidebar.querySelector('[data-reset="study"]').disabled = !s.done;
 });
@@ -765,11 +807,31 @@ window.addEventListener('storage', e => {
       records.delete(id);
     if (!dialog.open && document.activeElement?.id !== 'written')
       render(false);
+    else
+      refreshTodayCounts();
   } else if (e.key === null) {
     records.clear();
     render(false);
   }
 });
+function watchStudyDay() {
+  let displayedDay = currentStudyDay(), timer;
+  function schedule() {
+    clearTimeout(timer);
+    const day = currentStudyDay();
+    if (day !== displayedDay) {
+      displayedDay = day;
+      refreshTodayCounts();
+    }
+    const nextMidnight = Date.parse(day) + dayMs - koreaOffsetMs;
+    timer = setTimeout(schedule, Math.max(0, nextMidnight - Date.now()));
+  }
+  // A background tab or suspended phone may wake after the scheduled midnight.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
+  window.addEventListener('pageshow', schedule);
+  window.addEventListener('focus', schedule);
+  schedule();
+}
 async function boot() {
   try {
     const sets = window.LibraryPrivate ? await window.LibraryPrivate.loadCatalogs() : await Promise.all(['psat', 'major'].map(async (file) => {
@@ -806,6 +868,7 @@ async function boot() {
       }
     }
     render(!profile && !sync?.code());
+    watchStudyDay();
     if (memoryOnly)
       toast('브라우저 저장 공간을 사용할 수 없습니다.');
   } catch {
