@@ -302,6 +302,25 @@ function startScope(s) {
   const items = filtered(s);
   go(items.find(q => q.id === getLast().id) || items.find(q => state(q) === 'empty') || items[0]);
 }
+function officialLink(href, label) {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== 'https:' || url.username || url.password ||
+        !(url.hostname === 'gongmuwon.gosi.kr' || url.hostname.endsWith('.go.kr'))) return '';
+    return `<a class="official-link" href="${esc(url.href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  } catch {
+    return '';
+  }
+}
+function questionSource(source) {
+  if (!source) return '';
+  const parts = [
+    source.form && `<span>${esc(source.form)}책형</span>`,
+    source.name && `<span>${esc(source.name)}</span>`,
+    officialLink(source.paper, '시험지 출처'),
+  ].filter(Boolean);
+  return parts.length ? `<div class="question-source">${parts.join('')}</div>` : '';
+}
 function answerArea(q) {
   const r = records.get(q.id), known = Boolean(q.answer?.length), locked = Boolean(r) && !editing && known;
   const choices = q.choices ?? 5, result = state(q);
@@ -310,7 +329,7 @@ function answerArea(q) {
           {right: '정답입니다', wrong: '오답입니다', pending: '답안을 기록했습니다'}[result]}</strong><span>${
           known                    ? '정답 ' + q.answer.map(v => v + '번').join(' · ') :
               result === 'pending' ? '채점 대기' :
-                                     '직접 채점한 결과'}</span></div>` :
+                                     '직접 채점한 결과'}</span>${q.source?.key ? officialLink(q.source.key, '공식 정답표') : ''}</div>` :
       '';
   return `<div class="answer-top"><h2>${choices ? '답안 선택' : '서술형 답안'}</h2>${
       locked ? '<button class="text-btn" data-act="retry">다시 풀기</button>' : ''}</div>
@@ -387,7 +406,7 @@ function solve(remember = true) {
   <div class="reader-column"><article class="question"><div class="question-head"><div class="crumb">${esc([
         q.group, q.category, q.topic, q.subtopic
       ].filter(Boolean).join(' › '))}</div><div class="question-title"><h2>${esc(q.exam)} <span>${
-          esc(q.number)}번</span></h2><button class="soft capture" data-act="capture">문제 이미지 복사</button></div></div>
+          esc(q.number)}번</span></h2><button class="soft capture" data-act="capture">문제 이미지 복사</button></div>${questionSource(q.source)}</div>
   <div class="paper">${
           q.images
               .map(

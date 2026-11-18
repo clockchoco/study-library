@@ -835,6 +835,23 @@ button.range-label:hover .range-title strong {
   white-space:nowrap;
 }
 
+.question-source {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:baseline;
+  gap:4px 12px;
+  margin-top:8px;
+  font-size:12px;
+  color:var(--muted);
+}
+
+.official-link {
+  color:var(--forest);
+  font-weight:650;
+  text-decoration:underline;
+  text-underline-offset:3px;
+}
+
 .capture {
   white-space:nowrap;
 }
