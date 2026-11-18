@@ -330,7 +330,7 @@ function solve(remember = true) {
   <div class="reader-column"><article class="question"><div class="question-head"><div class="crumb">${esc([
         q.group, q.category, q.topic, q.subtopic
       ].filter(Boolean).join(' › '))}</div><div class="question-title"><h2>${esc(q.exam)} <span>${
-          esc(q.number)}번</span></h2><button class="soft capture" data-act="capture">문제 캡처 ↓</button></div></div>
+          esc(q.number)}번</span></h2><button class="soft capture" data-act="capture">문제 이미지 복사</button></div></div>
   <div class="paper">${
           q.images
               .map(
@@ -475,38 +475,45 @@ function listModal() {
           listPage + 1 >= pages ? 'disabled' : ''}>다음 목록</button></div>`,
       'list');
 }
+async function questionPng(q) {
+  const images = await Promise.all(q.images.map(async src => {
+    const img = new Image();
+    img.src = window.LibraryPrivate ? await window.LibraryPrivate.imageUrl(src) : src;
+    await img.decode();
+    return img;
+  }));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(...images.map(img => img.naturalWidth));
+  const heights = images.map(img => Math.round(img.naturalHeight * canvas.width / img.naturalWidth));
+  const gap = 12;
+  canvas.height = heights.reduce((total, height) => total + height, 0) + gap * (images.length - 1);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  let y = 0;
+  images.forEach((img, i) => {
+    ctx.drawImage(img, 0, y, canvas.width, heights[i]);
+    y += heights[i] + gap;
+  });
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG encoding failed')), 'image/png');
+  });
+}
 async function capture(q, btn) {
+  if (!navigator.clipboard?.write || !window.ClipboardItem) {
+    toast('이 브라우저는 이미지 복사를 지원하지 않습니다. 최신 Safari, Chrome 또는 Edge에서 열어 주세요.');
+    return;
+  }
   btn.disabled = true;
   try {
-    const urls = window.LibraryPrivate ? await Promise.all(q.images.map(src => window.LibraryPrivate.imageUrl(src))) : q.images;
-    const imgs = await Promise.all(urls.map(src => new Promise((resolve, reject) => {
-                                                  const img = new Image();
-                                                  img.onload = () => resolve(img);
-                                                  img.onerror = reject;
-                                                  img.src = src;
-                                                })));
-    const width = Math.max(...imgs.map(img => img.naturalWidth)), cv = document.createElement('canvas');
-    const heights = imgs.map(img => Math.round(img.naturalHeight * width / img.naturalWidth));
-    cv.width = width;
-    cv.height = heights.reduce((a, b) => a + b, 0) + 12 * (imgs.length - 1);
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, cv.width, cv.height);
-    let y = 0;
-    imgs.forEach((img, i) => {
-      ctx.drawImage(img, 0, y, width, heights[i]);
-      y += heights[i] + 12;
-    });
-    const blob = await new Promise(
-        (resolve, reject) => cv.toBlob(b => b ? resolve(b) : reject(new Error()), 'image/png'));
-    const url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url;
-    a.download = (q.category + '_' + q.exam + '_' + q.number + '번').replace(/[\\/:*?"<>|]/g, '_') + '.png';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    toast('문제 PNG 이미지를 저장했습니다.');
-  } catch {
-    toast('이미지를 저장하지 못했습니다. 연결을 확인하고 다시 시도해 주세요.');
+    // Start the write during the click gesture, even when image decryption is still pending.
+    const item = new ClipboardItem({'image/png': questionPng(q)});
+    await navigator.clipboard.write([item]);
+    toast('문제 이미지를 복사했습니다. 채팅창에 붙여넣으세요.');
+  } catch (error) {
+    toast(error.name === 'NotAllowedError'
+        ? '복사가 차단되었습니다. 브라우저의 클립보드 권한을 확인하고 다시 눌러 주세요.'
+        : '문제 이미지를 복사하지 못했습니다. 다시 시도해 주세요.');
   } finally {
     btn.disabled = false;
   }
