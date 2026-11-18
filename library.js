@@ -37,7 +37,12 @@ const syncLabels = {
 };
 const percent = (a, b) => b ? Number((a / b * 100).toFixed(2)) : 0;
 const scopeName = s => s.subtopic || s.topic || s.category || s.group || '전체 문제';
-const unique = (items, k) => [...new Set(items.map(q => q[k]).filter(Boolean))];
+const compareRangeNames = new Intl.Collator('ko-KR', {numeric: true}).compare;
+function rangeNames(items, field) {
+  const names = [...new Set(items.map(q => q[field]).filter(Boolean))];
+  // A question moved from another subject should not determine a chapter's position in the menu.
+  return field === 'topic' || field === 'subtopic' ? names.sort(compareRangeNames) : names;
+}
 const filtered = s => questions.filter(q => Object.keys(s).every(k => !s[k] || q[k] === s[k]));
 const getLast = () => byId.get(read(prefix + 'last', null)) || questions[0];
 function read(k, fallback) {
@@ -157,20 +162,21 @@ function options(values, sel, all) {
   return `<option value="">${all}</option>` +
       values.map(v => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
 }
+function rangeLabels(group) {
+  return {group: '문제집', category: '과목', topic: group === '전공' ? '단원' : '유형',
+          subtopic: group === '전공' ? '세부 주제' : '세부 유형'};
+}
 function filters(s) {
   let part = questions;
-  return `<div class="filters">${
-          [['group', '문제집'], ['category', '과목'], ['topic', '유형'], ['subtopic', '세부 유형']]
-              .map(([k, label]) => {
-                const values = unique(part, k);
-                if (!values.length || (k === 'topic' && !s.category) || (k === 'subtopic' && !s.topic))
-                  return '';
-                if (s[k])
-                  part = part.filter(q => q[k] === s[k]);
-                return `<label>${label}<select data-field="${k}">${
-                    options(values, s[k], '모든 ' + label)}</select></label>`;
-              })
-              .join('')}</div>`;
+  const labels = rangeLabels(s.group);
+  const fields = rangeFields.map(k => {
+    const label = labels[k], values = rangeNames(part, k);
+    if (!values.length || (k === 'topic' && !s.category) || (k === 'subtopic' && !s.topic))
+      return '';
+    if (s[k]) part = part.filter(q => q[k] === s[k]);
+    return `<label>${label}<select data-field="${k}">${options(values, s[k], '모든 ' + label)}</select></label>`;
+  });
+  return `<div class="filters">${fields.join('')}</div>`;
 }
 function changeField(s, k, value) {
   const keys = Object.keys(emptyScope());
@@ -230,22 +236,23 @@ function scopeForPath(path) {
 }
 function rangeRows(items, parentPath) {
   const field = rangeFields[parentPath.length];
-  return unique(items, field).map(name => {
+  const labels = rangeLabels(parentPath[0]);
+  return rangeNames(items, field).map(name => {
     const path = [...parentPath, name];
     const members = items.filter(q => q[field] === name);
     const s = stats(members);
     const childField = rangeFields[path.length];
-    const children = childField ? unique(members, childField) : [];
+    const children = childField ? rangeNames(members, childField) : [];
     const open = children.length > 0 && path.every((part, index) => expandedPath[index] === part);
     const counts = [`정답 ${fmt(s.right)}`, `오답 ${fmt(s.wrong)}`];
     if (s.pending) counts.push(`채점 대기 ${fmt(s.pending)}`);
-    if (children.length) counts.unshift(`${fmt(children.length)}개 ${childField === 'topic' ? '유형' : '세부 유형'}`);
+    if (children.length) counts.unshift(`${fmt(children.length)}개 ${labels[childField]}`);
     const markIndex = order.indexOf(name);
     const mark = path.length === 2 && markIndex >= 0
       ? `<span class="subject-mark ${['sage','blue','clay','plum','wheat'][markIndex % 5]}" aria-hidden="true">${esc(glyphs[markIndex])}</span>` : '';
     const label = `${mark}<span class="range-title"><strong>${esc(name)}</strong><small>${counts.join(' · ')}</small></span>`;
     return `<div class="range-row" data-path="${esc(JSON.stringify(path))}" data-depth="${path.length - 2}">
-      ${children.length ? `<button class="range-label" data-expand-range aria-expanded="${open}" aria-label="${esc(name)} ${childField === 'topic' ? '유형' : '세부 유형'} ${open ? '접기' : '보기'}">${label}<span class="range-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span></button>` : `<div class="range-label">${label}</div>`}
+      ${children.length ? `<button class="range-label" data-expand-range aria-expanded="${open}" aria-label="${esc(name)} ${labels[childField]} ${open ? '접기' : '보기'}">${label}<span class="range-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span></button>` : `<div class="range-label">${label}</div>`}
       <div class="range-progress">${scopeCounts(s, 'range')}${meter(s)}</div>
       <div class="range-actions"><button class="soft" data-start-range aria-label="${esc(name)} 풀기">풀기</button>
         <button class="range-reset" data-reset="range" aria-label="${esc(name)} 기록 초기화" ${s.done ? '' : 'disabled'}>초기화</button></div>
@@ -254,7 +261,7 @@ function rangeRows(items, parentPath) {
 }
 function rangeLibrary() {
   const items = filtered({group: tab}), s = stats(items);
-  const tabs = unique(questions, 'group').map(name =>
+  const tabs = rangeNames(questions, 'group').map(name =>
     `<button data-group="${esc(name)}" aria-pressed="${name === tab}">${esc(name)}</button>`).join('');
   return `<div class="section-title"><h2 id="library-heading">과목별 문제집</h2></div>
     <div class="library-toolbar"><div class="tabs" aria-label="문제집 선택">${tabs}</div>
@@ -349,7 +356,15 @@ function solve(remember = true) {
     setStudy({group: current.group, category: current.category}, remember);
   pool = filtered(study);
   if (!pool.includes(current)) {
-    setStudy({group: current.group, category: current.category}, remember);
+    const next = {group: current.group, category: current.category};
+    const resuming = current.id === read(prefix + 'last', null);
+    if (resuming && study.topic) {
+      next.topic = current.topic;
+      // The original PSAT catalog combined the type and subtype in one topic label.
+      if (study.subtopic || (study.group === 'PSAT' && study.topic.includes(' · ')))
+        next.subtopic = current.subtopic || '';
+    }
+    setStudy(next, remember || resuming);
     pool = filtered(study);
   }
   index = pool.indexOf(current);
